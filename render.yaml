@@ -3,9 +3,11 @@ services:
     name: watermark-remover-api
     env: python
     region: oregon
+    plan: free
     buildCommand: |
-      apt-get update && apt-get install -y ffmpeg libsm6 libxext6 libxrender-dev libgomp1 && \
-      pip install --upgrade pip && \
+      apt-get update && \
+      apt-get install -y ffmpeg libsm6 libxext6 libxrender-dev libgomp1 libgl1 && \
+      pip install --upgrade pip setuptools wheel && \
       pip install -r requirements.txt
     startCommand: python main.py
     envVars:
@@ -13,8 +15,4 @@ services:
         value: 3.11.5
     healthCheckPath: /health
     autoDeploy: true
-    disk:
-      name: watermark-storage
-      mountPath: /opt/render/project/src/outputs
-      sizeGB: 10
 
