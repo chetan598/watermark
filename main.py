@@ -588,8 +588,8 @@ async def download_video(filename: str):
 @app.get("/stream/{task_id}")
 async def stream_progress(task_id: str):
     """
-    Server-Sent Events endpoint for real-time progress updates
-    Keeps connection alive and sends updates + final video
+    Server-Sent Events with HEARTBEAT - NEVER TIMES OUT
+    Keeps connection alive for hours with constant heartbeat pings
     """
     async def event_generator():
         # Register this client
@@ -597,62 +597,88 @@ async def stream_progress(task_id: str):
         
         try:
             last_progress = -1
+            heartbeat_counter = 0
             
             while True:
-                # Check if task exists
-                if task_id not in processing_status:
+                # CRITICAL: Send heartbeat every iteration to prevent timeout
+                heartbeat_counter += 1
+                if heartbeat_counter % 4 == 0:  # Every 2 seconds
                     yield {
-                        "event": "error",
-                        "data": '{"message": "Task not found"}'
+                        "event": "heartbeat",
+                        "data": f'{{"alive": true, "timestamp": {int(time.time())}}}'
                     }
-                    break
+                
+                # Check if task exists (or wait for it to be created)
+                if task_id not in processing_status:
+                    # Task not started yet, send waiting status
+                    yield {
+                        "event": "waiting",
+                        "data": '{"message": "Waiting for processing to start..."}'
+                    }
+                    await asyncio.sleep(0.5)
+                    continue
                 
                 status_data = processing_status[task_id]
                 current_progress = status_data.get("progress", 0)
                 current_status = status_data.get("status", "processing")
                 
-                # Send progress update if changed
-                if current_progress != last_progress:
+                # Send progress update if changed OR every 5 seconds
+                if current_progress != last_progress or heartbeat_counter % 10 == 0:
                     yield {
                         "event": "progress",
                         "data": f'{{"progress": {current_progress}, "status": "{current_status}"}}'
                     }
                     last_progress = current_progress
                 
-                # If completed, send video data
+                # If completed, send video URL
                 if current_status == "completed":
                     video_path = status_data.get("video_path")
                     if video_path and os.path.exists(video_path):
-                        # Read video as base64
-                        with open(video_path, 'rb') as f:
-                            video_bytes = f.read()
-                            video_base64 = base64.b64encode(video_bytes).decode('utf-8')
-                        
-                        # Send completion with video URL
                         output_filename = f"{task_id}_output.mp4"
+                        file_size = os.path.getsize(video_path)
+                        
                         yield {
                             "event": "complete",
-                            "data": f'{{"status": "completed", "download_url": "/download/{output_filename}", "file_size": {len(video_bytes)}}}'
+                            "data": f'{{"status": "completed", "download_url": "/download/{output_filename}", "file_size": {file_size}, "task_id": "{task_id}"}}'
                         }
                     break
                 
                 # If error, notify and break
                 if current_status == "error":
+                    error_msg = status_data.get("message", "Unknown error").replace('"', '\\"')
                     yield {
                         "event": "error",
-                        "data": f'{{"message": "{status_data.get("message", "Unknown error")}"}}'
+                        "data": f'{{"message": "{error_msg}"}}'
                     }
                     break
                 
-                # Wait before next update
+                # Wait before next update (keep connection alive!)
                 await asyncio.sleep(0.5)
                 
+        except asyncio.CancelledError:
+            # Client disconnected - cleanup
+            pass
+        except Exception as e:
+            # Send error before closing
+            yield {
+                "event": "error",
+                "data": f'{{"message": "Stream error: {str(e)}"}}'
+            }
         finally:
             # Clean up client registration
             if task_id in sse_clients:
                 del sse_clients[task_id]
     
-    return EventSourceResponse(event_generator())
+    # Return SSE response with custom headers to prevent timeout
+    return EventSourceResponse(
+        event_generator(),
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "Connection": "keep-alive",
+        },
+        ping=15  # Send ping every 15 seconds to keep connection alive
+    )
 
 
 @app.post("/upload-stream")
@@ -735,5 +761,12 @@ if __name__ == "__main__":
     # Get port from environment variable (Render uses this) or default to 8000
     port = int(os.environ.get("PORT", 8000))
     
-    # Bind to 0.0.0.0 to accept connections from anywhere
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # Run with LONG timeouts for SSE streaming (no timeout even after hours)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=port,
+        timeout_keep_alive=3600,  # Keep connections alive for 1 hour
+        timeout_graceful_shutdown=30,
+        access_log=True
+    )
