@@ -493,7 +493,7 @@ async def process_video_async(input_path: str, output_path: str, task_id: str, w
         
         # Clean up input file after processing
         if os.path.exists(input_path):
-        os.remove(input_path)
+            os.remove(input_path)
             
     except Exception as e:
         processing_status[task_id] = {
