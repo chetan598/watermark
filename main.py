@@ -27,13 +27,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware to allow cross-origin requests
+# Add CORS middleware to allow cross-origin requests (Supabase Edge Functions compatible)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],  # Allows all origins including Supabase
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
+    expose_headers=["*"],  # Expose all headers
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
 # Create directories for storing videos
@@ -319,7 +321,7 @@ def process_video_with_inpainting_old(input_video_path, output_video_path, task_
         
         current_frame_num += 1
         if task_id:
-            progress = current_frame_num / frame_count
+        progress = current_frame_num / frame_count
             processing_status[task_id]["progress"] = int(progress * 100)
 
     cap.release()
@@ -491,7 +493,7 @@ async def process_video_async(input_path: str, output_path: str, task_id: str, w
         
         # Clean up input file after processing
         if os.path.exists(input_path):
-            os.remove(input_path)
+        os.remove(input_path)
             
     except Exception as e:
         processing_status[task_id] = {
