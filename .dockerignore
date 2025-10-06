@@ -1,0 +1,52 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info
+dist
+build
+.eggs
+.pytest_cache
+.coverage
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+uploads/
+outputs/
+*.mp4
+*.mov
+*.avi
+
+# Documentation
+*.md
+!README.md
+
+# Deployment files (not needed in container)
+render.yaml
+render-build.sh
+Procfile
+runtime.txt
+
