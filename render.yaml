@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: watermark-remover-api
+    env: python
+    region: oregon
+    buildCommand: |
+      apt-get update && apt-get install -y ffmpeg libsm6 libxext6 libxrender-dev libgomp1 && \
+      pip install --upgrade pip && \
+      pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.5
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: watermark-storage
+      mountPath: /opt/render/project/src/outputs
+      sizeGB: 10
+
