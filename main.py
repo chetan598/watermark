@@ -321,7 +321,7 @@ def process_video_with_inpainting_old(input_video_path, output_video_path, task_
         
         current_frame_num += 1
         if task_id:
-        progress = current_frame_num / frame_count
+            progress = current_frame_num / frame_count
             processing_status[task_id]["progress"] = int(progress * 100)
 
     cap.release()
