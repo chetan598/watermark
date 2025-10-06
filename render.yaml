@@ -2,17 +2,9 @@ services:
   - type: web
     name: watermark-remover-api
     env: python
-    region: oregon
+    runtime: python
     plan: free
-    buildCommand: |
-      apt-get update && \
-      apt-get install -y ffmpeg libsm6 libxext6 libxrender-dev libgomp1 libgl1 && \
-      pip install --upgrade pip setuptools wheel && \
-      pip install -r requirements.txt
-    startCommand: python main.py
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.5
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    autoDeploy: true
 
