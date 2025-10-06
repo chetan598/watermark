@@ -1,0 +1,16 @@
+# FastAPI and server dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+requests==2.31.0
+
+# Video processing dependencies
+opencv-python==4.8.1.78
+numpy==1.24.3
+
+# Audio processing (for ffmpeg)
+imageio-ffmpeg==0.4.9
+
+# Additional utilities
+python-dotenv==1.0.0
+
