@@ -1,6 +1,7 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Form
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
+from sse_starlette.sse import EventSourceResponse
 import cv2
 import numpy as np
 import os
@@ -58,6 +59,9 @@ processing_status = {}
 
 # Store used task IDs to ensure uniqueness
 used_task_ids = set()
+
+# Store SSE clients waiting for updates
+sse_clients = {}
 
 def generate_unique_task_id() -> str:
     """
@@ -306,7 +310,12 @@ def process_video_with_inpainting_old(input_video_path, output_video_path, task_
         current_frame_num += 1
         if task_id:
             progress = current_frame_num / frame_count
-            processing_status[task_id]["progress"] = int(progress * 100)
+            progress_pct = int(progress * 100)
+            processing_status[task_id]["progress"] = progress_pct
+            
+            # Notify SSE clients
+            if task_id in sse_clients:
+                sse_clients[task_id]["progress"] = progress_pct
 
     cap.release()
     out.release()
@@ -315,6 +324,8 @@ def process_video_with_inpainting_old(input_video_path, output_video_path, task_
     try:
         if task_id:
             processing_status[task_id]["status"] = "adding_audio"
+            if task_id in sse_clients:
+                sse_clients[task_id]["status"] = "adding_audio"
         
         try:
             import imageio_ffmpeg
@@ -349,7 +360,12 @@ def process_video_with_inpainting_old(input_video_path, output_video_path, task_
         pass
     
     if task_id:
-        processing_status[task_id] = {"status": "completed", "progress": 100}
+        processing_status[task_id] = {"status": "completed", "progress": 100, "video_path": output_video_path}
+        
+        # Notify SSE clients
+        if task_id in sse_clients:
+            sse_clients[task_id]["status"] = "completed"
+            sse_clients[task_id]["video_ready"] = True
     
     return output_video_path
 
@@ -569,6 +585,126 @@ async def download_video(filename: str):
     )
 
 
+@app.get("/stream/{task_id}")
+async def stream_progress(task_id: str):
+    """
+    Server-Sent Events endpoint for real-time progress updates
+    Keeps connection alive and sends updates + final video
+    """
+    async def event_generator():
+        # Register this client
+        sse_clients[task_id] = {"progress": 0, "status": "waiting", "video_ready": False}
+        
+        try:
+            last_progress = -1
+            
+            while True:
+                # Check if task exists
+                if task_id not in processing_status:
+                    yield {
+                        "event": "error",
+                        "data": '{"message": "Task not found"}'
+                    }
+                    break
+                
+                status_data = processing_status[task_id]
+                current_progress = status_data.get("progress", 0)
+                current_status = status_data.get("status", "processing")
+                
+                # Send progress update if changed
+                if current_progress != last_progress:
+                    yield {
+                        "event": "progress",
+                        "data": f'{{"progress": {current_progress}, "status": "{current_status}"}}'
+                    }
+                    last_progress = current_progress
+                
+                # If completed, send video data
+                if current_status == "completed":
+                    video_path = status_data.get("video_path")
+                    if video_path and os.path.exists(video_path):
+                        # Read video as base64
+                        with open(video_path, 'rb') as f:
+                            video_bytes = f.read()
+                            video_base64 = base64.b64encode(video_bytes).decode('utf-8')
+                        
+                        # Send completion with video URL
+                        output_filename = f"{task_id}_output.mp4"
+                        yield {
+                            "event": "complete",
+                            "data": f'{{"status": "completed", "download_url": "/download/{output_filename}", "file_size": {len(video_bytes)}}}'
+                        }
+                    break
+                
+                # If error, notify and break
+                if current_status == "error":
+                    yield {
+                        "event": "error",
+                        "data": f'{{"message": "{status_data.get("message", "Unknown error")}"}}'
+                    }
+                    break
+                
+                # Wait before next update
+                await asyncio.sleep(0.5)
+                
+        finally:
+            # Clean up client registration
+            if task_id in sse_clients:
+                del sse_clients[task_id]
+    
+    return EventSourceResponse(event_generator())
+
+
+@app.post("/upload-stream")
+async def upload_video_stream(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    webhook_url: Optional[str] = Form(None)
+):
+    """
+    Upload video and get task_id immediately
+    Use /stream/{task_id} to get real-time updates and video when ready
+    """
+    # Validate file type
+    if not file.filename.endswith(('.mp4', '.mov', '.avi')):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file format. Supported formats: mp4, mov, avi"
+        )
+    
+    # Generate unique task ID
+    task_id = generate_unique_task_id()
+    
+    # Save uploaded file
+    input_filename = f"{task_id}_input{Path(file.filename).suffix}"
+    input_path = UPLOAD_DIR / input_filename
+    
+    try:
+        with open(input_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error saving file: {str(e)}")
+    
+    # Define output path
+    output_filename = f"{task_id}_output.mp4"
+    output_path = OUTPUT_DIR / output_filename
+    
+    # Add background task for video processing
+    background_tasks.add_task(
+        process_video_async,
+        str(input_path),
+        str(output_path),
+        task_id,
+        webhook_url
+    )
+    
+    return {
+        "task_id": task_id,
+        "stream_url": f"/stream/{task_id}",
+        "message": "Video uploaded. Connect to stream_url for real-time updates."
+    }
+
+
 @app.delete("/cleanup/{task_id}")
 async def cleanup_files(task_id: str):
     """
@@ -584,6 +720,10 @@ async def cleanup_files(task_id: str):
     # Remove from status tracking
     if task_id in processing_status:
         del processing_status[task_id]
+    
+    # Remove SSE client if exists
+    if task_id in sse_clients:
+        del sse_clients[task_id]
     
     return {"message": "Files cleaned up successfully"}
 
