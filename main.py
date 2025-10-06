@@ -305,7 +305,7 @@ def process_video_with_inpainting_old(input_video_path, output_video_path, task_
         
         current_frame_num += 1
         if task_id:
-        progress = current_frame_num / frame_count
+            progress = current_frame_num / frame_count
             processing_status[task_id]["progress"] = int(progress * 100)
 
     cap.release()
@@ -477,7 +477,7 @@ async def process_video_async(input_path: str, output_path: str, task_id: str, w
         
         # Clean up input file after processing
         if os.path.exists(input_path):
-        os.remove(input_path)
+            os.remove(input_path)
             
     except Exception as e:
         processing_status[task_id] = {
