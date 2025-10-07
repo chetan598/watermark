@@ -113,38 +113,44 @@ def download_video_from_url(url: str, output_path: str) -> bool:
         print(f"Download error: {e}")
         return False
 
-def upload_video_to_supabase(video_path: str, task_id: str, supabase_url: str, supabase_key: str) -> Optional[str]:
-    """Upload processed video to Supabase Storage"""
+def send_video_to_callback(video_path: str, task_id: str, callback_url: str) -> bool:
+    """Send processed video back to the callback URL that made the request"""
     try:
-        print(f"Uploading processed video to Supabase Storage...")
+        print(f"📤 Sending processed video back to callback URL: {callback_url}")
         
         # Read video file
         with open(video_path, 'rb') as f:
             video_data = f.read()
         
-        # Upload to Supabase Storage (watermark_sora bucket)
-        filename = f"processed_{task_id}.mp4"
-        storage_url = f"{supabase_url}/storage/v1/object/watermark_sora/{filename}"
-        
-        headers = {
-            'Authorization': f'Bearer {supabase_key}',
-            'Content-Type': 'video/mp4',
+        # Create form data for multipart upload
+        files = {
+            'video': (f'processed_{task_id}.mp4', video_data, 'video/mp4')
         }
         
-        response = requests.post(storage_url, data=video_data, headers=headers, timeout=300)
+        data = {
+            'task_id': task_id,
+            'status': 'completed',
+            'message': 'Video processing completed successfully'
+        }
+        
+        # Send to callback URL
+        response = requests.post(
+            callback_url,
+            files=files,
+            data=data,
+            timeout=300  # 5 minutes timeout for large files
+        )
         
         if response.status_code in [200, 201]:
-            # Get public URL
-            public_url = f"{supabase_url}/storage/v1/object/public/watermark_sora/{filename}"
-            print(f"Upload successful: {public_url}")
-            return public_url
+            print(f"✅ Video sent to callback URL successfully")
+            return True
         else:
-            print(f"Upload failed: {response.status_code} - {response.text}")
-            return None
+            print(f"❌ Failed to send to callback URL: {response.status_code} - {response.text}")
+            return False
             
     except Exception as e:
-        print(f"Upload error: {e}")
-        return None
+        print(f"❌ Error sending to callback URL: {e}")
+        return False
 
 def process_video_with_inpainting(input_video_path: str, output_video_path: str, task_id: str) -> bool:
     """Process video with watermark removal"""
@@ -163,7 +169,7 @@ def process_video_with_inpainting(input_video_path: str, output_video_path: str,
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-        
+
         # Process in parallel batches
         batch_size = 50
         max_workers = min(8, multiprocessing.cpu_count())
@@ -171,12 +177,12 @@ def process_video_with_inpainting(input_video_path: str, output_video_path: str,
         current_frame_num = 0
         frame_batch = []
         time_batch = []
-        
+    
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
                 break
-            
+
             current_time = current_frame_num / fps
             frame_batch.append(frame.copy())
             time_batch.append(current_time)
@@ -199,13 +205,13 @@ def process_video_with_inpainting(input_video_path: str, output_video_path: str,
                 
                 progress = (current_frame_num + 1) / frame_count
                 processing_status[task_id]["progress"] = int(progress * 100)
-            
+        
             current_frame_num += 1
 
         cap.release()
         out.release()
         cv2.destroyAllWindows()
-        
+    
         # Add audio
         processing_status[task_id]["status"] = "adding_audio"
         
@@ -236,11 +242,11 @@ def process_video_with_inpainting(input_video_path: str, output_video_path: str,
         if os.path.exists(output_with_audio) and os.path.getsize(output_with_audio) > 0:
             os.remove(output_video_path)
             os.rename(output_with_audio, output_video_path)
-        
+            
         processing_status[task_id]["status"] = "completed"
         processing_status[task_id]["progress"] = 100
         return True
-        
+            
     except Exception as e:
         processing_status[task_id] = {"status": "error", "message": str(e)}
         return False
@@ -263,26 +269,38 @@ async def process_video_task(request: ProcessVideoRequest):
         if not process_video_with_inpainting(str(input_path), str(output_path), task_id):
             return
         
-        # Upload to Supabase Storage
-        processing_status[task_id]["status"] = "uploading"
-        processed_url = upload_video_to_supabase(
-            str(output_path),
-            task_id,
-            request.supabase_url,
-            request.supabase_key
-        )
-        
-        if processed_url:
+        # Send processed video back to callback URL
+        if request.callback_url:
+            processing_status[task_id]["status"] = "uploading"
+            print(f"🎬 Video processing complete, sending back to callback URL...")
+            
+            success = send_video_to_callback(
+                str(output_path),
+                task_id,
+                request.callback_url
+            )
+            
+            if success:
+                processing_status[task_id] = {
+                    "status": "completed",
+                    "progress": 100,
+                    "message": "Video sent to callback URL successfully"
+                }
+                print(f"🎉 Task {task_id} completed successfully! Video sent to callback URL.")
+            else:
+                processing_status[task_id] = {
+                    "status": "error",
+                    "message": "Failed to send video to callback URL"
+                }
+                print(f"❌ Task {task_id} failed: Failed to send video to callback URL")
+        else:
+            # No callback URL provided, just mark as completed
             processing_status[task_id] = {
                 "status": "completed",
                 "progress": 100,
-                "processed_video_url": processed_url
+                "message": "Video processing completed (no callback URL provided)"
             }
-        else:
-            processing_status[task_id] = {
-                "status": "error",
-                "message": "Upload to storage failed"
-            }
+            print(f"🎉 Task {task_id} completed successfully! (No callback URL provided)")
         
         # Cleanup temp files
         if input_path.exists():
@@ -298,10 +316,10 @@ async def process_video_task(request: ProcessVideoRequest):
 @app.get("/")
 async def root():
     return {
-        "message": "Watermark Remover API - Storage Based",
+        "message": "Watermark Remover API - Direct Response",
         "version": "2.0.0",
         "endpoints": {
-            "POST /process": "Process video from Storage URL",
+            "POST /process": "Process video and return processed video directly",
             "GET /status/{task_id}": "Check processing status",
             "GET /stream/{task_id}": "SSE stream for progress",
             "GET /health": "Health check"
@@ -313,9 +331,9 @@ async def health_check():
     return {"status": "healthy", "service": "watermark-remover-storage"}
 
 @app.post("/process")
-async def process_video(request: ProcessVideoRequest, background_tasks: BackgroundTasks):
+async def process_video(request: ProcessVideoRequest):
     """
-    Process video from Supabase Storage URL
+    Process video from Supabase Storage URL and return processed video directly
     
     Args:
         task_id: Unique task identifier
@@ -324,19 +342,58 @@ async def process_video(request: ProcessVideoRequest, background_tasks: Backgrou
         supabase_key: Supabase service key
     
     Returns:
-        task_id and status URL
+        Processed video file directly in the response
     """
     print(f"Received process request for task: {request.task_id}")
     
-    # Add background task
-    background_tasks.add_task(process_video_task, request)
-    
-    return {
-        "task_id": request.task_id,
-        "message": "Video processing started",
-        "status_url": f"/status/{request.task_id}",
-        "stream_url": f"/stream/{request.task_id}"
-    }
+    try:
+        # Set initial status
+        processing_status[request.task_id] = {"status": "downloading", "progress": 0}
+        
+        # Download video
+        input_path = TEMP_DIR / f"{request.task_id}_input.mp4"
+        if not download_video_from_url(request.video_url, str(input_path)):
+            processing_status[request.task_id] = {"status": "error", "message": "Download failed"}
+            raise HTTPException(status_code=400, detail="Download failed")
+        
+        # Process video
+        output_path = TEMP_DIR / f"{request.task_id}_output.mp4"
+        if not process_video_with_inpainting(str(input_path), str(output_path), request.task_id):
+            processing_status[request.task_id] = {"status": "error", "message": "Processing failed"}
+            raise HTTPException(status_code=500, detail="Video processing failed")
+        
+        # Mark as completed
+        processing_status[request.task_id] = {
+            "status": "completed",
+            "progress": 100,
+            "message": "Video processing completed successfully"
+        }
+        
+        # Return the processed video file directly
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            path=str(output_path),
+            filename=f"processed_{request.task_id}.mp4",
+            media_type="video/mp4"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        processing_status[request.task_id] = {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+    finally:
+        # Cleanup temp files
+        try:
+            input_path = locals().get('input_path')
+            output_path = locals().get('output_path')
+            if input_path and input_path.exists():
+                os.remove(input_path)
+            # Do not remove output_path here as it's being sent back
+            # It should be cleaned up later if needed, or by a separate process
+        except Exception as cleanup_error:
+            print(f"Error during cleanup: {cleanup_error}")
+
 
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):

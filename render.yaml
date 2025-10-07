@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: watermark-remover-api
-    env: docker
-    plan: free
-    healthCheckPath: /health
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
-
