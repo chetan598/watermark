@@ -119,63 +119,63 @@ def process_video_with_inpainting(input_video_path: str, output_video_path: str,
     try:
         processing_status[task_id] = {"status": "processing", "progress": 0}
     
-    cap = cv2.VideoCapture(input_video_path)
-    if not cap.isOpened():
-            processing_status[task_id] = {"status": "error", "message": "Could not open video"}
-            return False
+        cap = cv2.VideoCapture(input_video_path)
+        if not cap.isOpened():
+                processing_status[task_id] = {"status": "error", "message": "Could not open video"}
+                return False
 
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
     
         # Process in parallel batches
         batch_size = 50
         max_workers = min(8, multiprocessing.cpu_count())
     
-    current_frame_num = 0
-    frame_batch = []
-    time_batch = []
+        current_frame_num = 0
+        frame_batch = []
+        time_batch = []
     
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        current_time = current_frame_num / fps
-        frame_batch.append(frame.copy())
-        time_batch.append(current_time)
-        
-        if len(frame_batch) >= batch_size or current_frame_num == frame_count - 1:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                masks = [np.zeros(frame.shape[:2], dtype=np.uint8) for frame in frame_batch]
-                processed_frames = list(executor.map(
-                    process_frame_with_watermark,
-                    frame_batch,
-                    masks,
-                    time_batch
-                ))
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
             
-            for processed_frame in processed_frames:
-                out.write(processed_frame)
+            current_time = current_frame_num / fps
+            frame_batch.append(frame.copy())
+            time_batch.append(current_time)
             
-            frame_batch = []
-            time_batch = []
-            
+            if len(frame_batch) >= batch_size or current_frame_num == frame_count - 1:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    masks = [np.zeros(frame.shape[:2], dtype=np.uint8) for frame in frame_batch]
+                    processed_frames = list(executor.map(
+                        process_frame_with_watermark,
+                        frame_batch,
+                        masks,
+                        time_batch
+                    ))
+                
+                for processed_frame in processed_frames:
+                    out.write(processed_frame)
+                
+                frame_batch = []
+                time_batch = []
+                
                 progress = (current_frame_num + 1) / frame_count
                 processing_status[task_id]["progress"] = int(progress * 100)
-        
-        current_frame_num += 1
+            
+            current_frame_num += 1
 
-    cap.release()
-    out.release()
-    cv2.destroyAllWindows()
+        cap.release()
+        out.release()
+        cv2.destroyAllWindows()
     
         # Add audio
-            processing_status[task_id]["status"] = "adding_audio"
+        processing_status[task_id]["status"] = "adding_audio"
         
         try:
             import imageio_ffmpeg
@@ -377,10 +377,10 @@ async def stream_progress(task_id: str):
                 
                 if current_status == "completed":
                     processed_url = status_data.get("processed_video_url", "")
-                        yield {
-                            "event": "complete",
+                    yield {
+                        "event": "complete",
                         "data": f'{{"status": "completed", "processed_video_url": "{processed_url}", "task_id": "{task_id}"}}'
-                        }
+                    }
                     break
                 
                 if current_status == "error":
