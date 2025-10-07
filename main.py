@@ -131,7 +131,7 @@ def process_video_with_inpainting(input_video_path: str, output_video_path: str,
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(output_video_path, fourcc, fps, (width, height))
-        
+    
         # Process in parallel batches
         batch_size = 50
         max_workers = min(8, multiprocessing.cpu_count())
@@ -281,33 +281,23 @@ async def process_video(request: ProcessVideoRequest):
     Returns:
         Processed video file directly in the response
     """
-    print(f"🎬 Received process request for task: {request.task_id}")
-    print(f"📹 Video URL: {request.video_url}")
-    print(f"🔑 Supabase URL: {request.supabase_url}")
+    print(f"Received process request for task: {request.task_id}")
     
     try:
         # Set initial status
         processing_status[request.task_id] = {"status": "downloading", "progress": 0}
         
         # Download video
-        print(f"📥 Starting download for task: {request.task_id}")
         input_path = TEMP_DIR / f"{request.task_id}_input.mp4"
         if not download_video_from_url(request.video_url, str(input_path)):
-            print(f"❌ Download failed for task: {request.task_id}")
             processing_status[request.task_id] = {"status": "error", "message": "Download failed"}
             raise HTTPException(status_code=400, detail="Download failed")
         
-        print(f"✅ Download completed for task: {request.task_id}")
-        
         # Process video
-        print(f"🎨 Starting video processing for task: {request.task_id}")
         output_path = TEMP_DIR / f"{request.task_id}_output.mp4"
         if not process_video_with_inpainting(str(input_path), str(output_path), request.task_id):
-            print(f"❌ Video processing failed for task: {request.task_id}")
             processing_status[request.task_id] = {"status": "error", "message": "Processing failed"}
             raise HTTPException(status_code=500, detail="Video processing failed")
-        
-        print(f"✅ Video processing completed for task: {request.task_id}")
         
         # Mark as completed
         processing_status[request.task_id] = {
@@ -317,12 +307,6 @@ async def process_video(request: ProcessVideoRequest):
         }
         
         # Return the processed video file directly
-        print(f"📤 Returning processed video for task: {request.task_id}")
-        print(f"📁 Output file path: {output_path}")
-        print(f"📏 Output file exists: {output_path.exists()}")
-        if output_path.exists():
-            print(f"📊 Output file size: {output_path.stat().st_size} bytes")
-        
         from fastapi.responses import FileResponse
         return FileResponse(
             path=str(output_path),
