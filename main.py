@@ -16,12 +16,13 @@ from datetime import datetime
 import secrets
 from concurrent.futures import ThreadPoolExecutor
 import multiprocessing
+import httpx # Added for async HTTP requests for the health check
 
 # Initialize FastAPI app
 app = FastAPI(
     title="Watermark Remover API - Storage Based",
-    description="Professional watermark removal with Supabase Storage integration",
-    version="2.0.0"
+    description="Professional watermark removal with Supabase Storage integration and health monitoring",
+    version="2.1.0"
 )
 
 # Add CORS middleware
@@ -34,6 +35,47 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=3600,
 )
+
+# --- Background Health Checker for External Service ---
+
+async def check_external_service_health():
+    """
+    Infinitely checks the health of an external service every 10 seconds.
+    This runs in the background for the entire lifetime of the application.
+    """
+    external_url = "https://aitoflo-pizza-pos.onrender.com/health"
+    print(f"Starting infinite health check for: {external_url}")
+    
+    async with httpx.AsyncClient() as client:
+        while True:
+            try:
+                # Make an async GET request to the external health endpoint
+                response = await client.get(external_url, timeout=5.0)
+                
+                if response.status_code == 200:
+                    # Log success to the console
+                    print(f"[{datetime.now().isoformat()}] External health check SUCCESS: Status {response.status_code}")
+                else:
+                    # Log a warning for non-200 status codes
+                    print(f"[{datetime.now().isoformat()}] External health check WARN: Received status {response.status_code}")
+            
+            except httpx.RequestError as e:
+                # Log any request errors (e.g., timeout, connection error)
+                print(f"[{datetime.now().isoformat()}] External health check FAIL: Could not connect. Error: {e.__class__.__name__}")
+            
+            # Wait for 10 seconds before the next check
+            await asyncio.sleep(10)
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    On application startup, create a background task for the health checker.
+    """
+    print("Application starting up...")
+    asyncio.create_task(check_external_service_health())
+
+
+# --- Core Application Logic ---
 
 # Create temp directory for processing
 TEMP_DIR = Path("temp_processing")
@@ -318,13 +360,13 @@ async def process_video_task(request: ProcessVideoRequest):
 async def root():
     return {
         "message": "Watermark Remover API - Async Processing",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "endpoints": {
             "POST /process": "Start video processing asynchronously (returns task_id immediately)",
             "GET /status/{task_id}": "Check processing status",
             "GET /stream/{task_id}": "SSE stream for real-time progress",
             "DELETE /cleanup/{task_id}": "Clean up task data and temp files",
-            "GET /health": "Health check"
+            "GET /health": "Health check for this service"
         },
         "usage": {
             "1": "POST /process with video_url and callback_url",
@@ -336,44 +378,31 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "watermark-remover-storage"}
+    """Provides a health check endpoint for this service."""
+    return {"status": "healthy", "service": "watermark-remover-storage", "timestamp": datetime.now().isoformat()}
 
 @app.post("/process")
 async def process_video(request: ProcessVideoRequest, background_tasks: BackgroundTasks):
     """
     Process video from Supabase Storage URL asynchronously
-    
-    Args:
-        task_id: Unique task identifier
-        video_url: Supabase Storage URL of the video
-        supabase_url: Supabase project URL
-        supabase_key: Supabase service key
-        callback_url: URL to send the processed video when complete
-    
-    Returns:
-        Task ID and status for tracking progress
     """
     print(f"Received process request for task: {request.task_id}")
     
-    # Check if task already exists
     if request.task_id in processing_status:
-        return {
+        return JSONResponse(status_code=409, content={
             "task_id": request.task_id,
             "status": "already_exists",
-            "message": "Task already exists",
+            "message": "A task with this ID is already being processed.",
             "current_status": processing_status[request.task_id]
-        }
+        })
     
-    # Set initial status
     processing_status[request.task_id] = {"status": "queued", "progress": 0}
-    
-    # Start background processing
     background_tasks.add_task(process_video_task, request)
     
     return {
         "task_id": request.task_id,
         "status": "queued",
-        "message": "Video processing started. Use /status/{task_id} to check progress or /stream/{task_id} for real-time updates.",
+        "message": "Video processing started. Use status or stream endpoints to track progress.",
         "endpoints": {
             "status": f"/status/{request.task_id}",
             "stream": f"/stream/{request.task_id}",
@@ -481,10 +510,11 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     
     uvicorn.run(
-        app, 
+        "__main__:app", 
         host="0.0.0.0", 
         port=port,
         timeout_keep_alive=3600,
         timeout_graceful_shutdown=30,
-        access_log=True
+        access_log=True,
+        reload=True # Added for development convenience
     )
